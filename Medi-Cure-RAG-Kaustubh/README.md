@@ -30,7 +30,7 @@ MediCure RAG is an AI-powered medical case search system that enables doctors to
 1. **FAISS-based vector search** for efficient retrieval of similar medical transcriptions
 2. **Groq LLM integration** (Llama 3.3 70B) for generating natural language answers grounded in retrieved cases
 3. **JWT authentication** for secure access control
-4. **MongoDB** for document storage and metadata management
+4. **Local file-based storage** for user data and document caching
 5. **Streamlit** for a modern, interactive web interface
 
 ---
@@ -54,12 +54,12 @@ A private hospital with thousands of unstructured patient notes required a secur
 |   (Port 8501)     |     |   (Port 8000)     |     |                   |
 +-------------------+     +-------------------+     +-------------------+
                                    |
-                    +--------------+--------------+--------------+
-                    |              |              |              |
-              +----------+  +----------+  +----------+  +----------+
-              |   JWT    |  |   RAG    |  |   LLM    |  | MongoDB  |
-              |   Auth   |  |  Engine  |  |  Engine  |  |  Store   |
-              +----------+  +----------+  +----------+  +----------+
+                    +--------------+--------------+
+                    |              |              |
+              +----------+  +----------+  +----------+
+              |   JWT    |  |   RAG    |  |   LLM    |
+              |   Auth   |  |  Engine  |  |  Engine  |
+              +----------+  +----------+  +----------+
                                  |              |
                     +------------+         +----+----+
                     |            |         |         |
@@ -100,17 +100,18 @@ User Query -> Send directly to LLM (Groq) -> Generate Answer (no context)
 
 **Decision:** ChromaDB failed to initialize on Python 3.14 due to its dependency on pydantic v1's `BaseSettings`, which is incompatible. FAISS provides better performance with fewer dependencies and full compatibility.
 
-### Why MongoDB?
+### Why File-Based Storage (No External Database)?
 
-| Criteria | MongoDB | SQLite | File-based JSON |
-|----------|---------|--------|-----------------|
-| Query Flexibility | Rich query language | SQL | Manual parsing |
-| Scalability | Excellent | Limited | Poor |
-| Document Storage | Native (BSON) | Requires ORM | Manual serialization |
-| Concurrency | Multi-process safe | Limited | Unsafe |
-| Indexing | Auto-indexing | Manual | None |
+| Criteria | File-Based (JSON + Pickle) | MongoDB | SQLite |
+|----------|---------------------------|---------|--------|
+| Deployment Complexity | Zero - just files | Requires server or Atlas | Requires driver |
+| Streamlit Cloud Compatibility | Works out of the box | Needs remote instance | Works |
+| Setup Required | None | Install & configure | pip install |
+| Dependencies | None (built-in Python) | pymongo | sqlite3 (built-in) |
+| Performance for our use case | Excellent (in-memory) | Good | Good |
+| Scalability | Moderate | Excellent | Moderate |
 
-**Decision:** MongoDB's document-oriented model naturally fits medical transcriptions (unstructured documents with metadata). It provides efficient querying by specialty, case ID, and keywords. The system includes a file-based fallback for environments without MongoDB.
+**Decision:** For this project's scale (~5,000 records), file-based storage is the simplest and most portable approach. Document metadata is cached in a pickle file and loaded into memory at startup. User data is stored in a simple JSON file. This eliminates the need for any database server, making deployment to Streamlit Cloud trivial.
 
 ### Why Groq API for LLM?
 
@@ -145,7 +146,7 @@ User Query -> Send directly to LLM (Groq) -> Generate Answer (no context)
 | Python-native | Yes | No | Yes | Partial |
 | Interactive Widgets | Built-in | Manual JS | Built-in | Manual |
 | Session Management | Built-in | Manual | Limited | Manual |
-| Deployment | Simple | Requires server | Simple | Moderate |
+| Deployment | Simple (Streamlit Cloud) | Requires server | Simple | Moderate |
 
 **Decision:** Streamlit allows rapid development of interactive data applications in pure Python. Its built-in session state, widgets, and layout system make it ideal for building a medical search interface without frontend development overhead.
 
@@ -199,13 +200,13 @@ Medi-Cure-RAG-Kaustubh/
 │   ├── main.py              # FastAPI application (endpoints)
 │   ├── config.py            # Configuration management
 │   ├── models.py            # Pydantic data models
-│   ├── auth.py              # JWT authentication (bcrypt)
-│   ├── database.py          # MongoDB operations
+│   ├── auth.py              # JWT authentication (bcrypt + JSON storage)
 │   ├── rag_engine.py        # FAISS + sentence-transformers RAG
 │   └── llm_engine.py        # Groq LLM integration
 ├── data/
 │   └── mtsamples.csv        # Medical transcriptions dataset
-├── faiss_index/             # FAISS index (auto-generated)
+├── faiss_index/             # FAISS index + document cache (auto-generated)
+├── users.json               # User accounts (auto-generated)
 ├── streamlit_app.py         # Streamlit UI (3 tabs)
 ├── evaluation.py            # RAG vs Base LLM evaluation script
 ├── EVALUATION_REPORT.md     # Generated evaluation report
@@ -224,7 +225,6 @@ Medi-Cure-RAG-Kaustubh/
 
 - Python 3.9 or higher
 - pip (Python package manager)
-- MongoDB (optional - system falls back to file storage)
 - Groq API key (free at https://console.groq.com)
 
 ### Step 1: Clone the Repository
@@ -249,10 +249,6 @@ pip install -r requirements.txt
 
 ### Step 4: Configure Environment Variables
 
-```bash
-cp .env.example .env
-```
-
 Edit `.env` and set your Groq API key:
 
 ```env
@@ -260,17 +256,7 @@ GROQ_API_KEY=your-actual-groq-api-key
 GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
-### Step 5: Setup MongoDB (Optional)
-
-```bash
-# If installed locally:
-mongod --dbpath /path/to/data
-
-# Or using Docker:
-docker run -d -p 27017:27017 --name mongodb mongo:latest
-```
-
-### Step 6: Ensure Dataset Exists
+### Step 5: Ensure Dataset Exists
 
 Verify `data/mtsamples.csv` is present. This dataset contains ~5,000 medical transcriptions.
 
@@ -308,7 +294,7 @@ streamlit run streamlit_app.py --server.port 8501
 
 ## Running the Evaluation
 
-To run the RAG vs Base LLM comparison (Task 2):
+To run the RAG vs Base LLM comparison:
 
 ```bash
 source venv/bin/activate
@@ -371,7 +357,7 @@ This will:
 
 2. **LLM Queries**: When using the LLM features, query text and retrieved transcriptions are sent to the Groq API. For production healthcare use, consider a locally hosted LLM (e.g., Ollama with Llama 3).
 
-3. **On-Premises Storage**: FAISS index and MongoDB store data locally.
+3. **Local Storage**: FAISS index, document cache, and user data are all stored as local files.
 
 ### Authentication
 

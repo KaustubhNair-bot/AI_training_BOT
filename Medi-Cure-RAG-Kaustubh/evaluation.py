@@ -32,7 +32,7 @@ from groq import Groq
 from app.config import settings
 from app.rag_engine import RAGEngine
 from app.llm_engine import LLMEngine
-from app.database import mongodb
+
 
 
 # ============================================================
@@ -197,7 +197,7 @@ def run_evaluation():
     
     # Initialize components
     print("Initializing RAG Engine...")
-    mongodb.connect()
+
     rag = RAGEngine()
     rag.initialize()
     

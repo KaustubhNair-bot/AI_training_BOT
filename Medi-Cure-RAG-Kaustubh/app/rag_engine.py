@@ -12,7 +12,6 @@ import pandas as pd
 import faiss
 
 from app.config import settings
-from app.database import mongodb
 from app.models import SearchResult, SearchResponse
 
 
@@ -20,7 +19,7 @@ class RAGEngine:
     """
     RAG Engine for medical transcription search
     Uses FAISS for vector indexing and sentence-transformers for embeddings
-    MongoDB stores the document metadata
+    Document metadata is stored in a local pickle cache
     All processing is done locally to ensure patient data security
     """
     
@@ -28,7 +27,7 @@ class RAGEngine:
         self.faiss_index = None
         self.embedding_model = None
         self.id_mapping: List[str] = []  # Maps FAISS index to case_id
-        self.documents_cache: Dict[str, Dict[str, Any]] = {}  # Cache for quick lookup
+        self.documents_cache: Dict[str, Dict[str, Any]] = {}  # Local cache for document metadata
         self._initialized = False
     
     def initialize(self, force_rebuild: bool = False):
@@ -54,9 +53,6 @@ class RAGEngine:
         index_path = os.path.join(index_dir, "index.faiss")
         mapping_path = os.path.join(index_dir, "id_mapping.pkl")
         cache_path = os.path.join(index_dir, "docs_cache.pkl")
-        
-        # Connect to MongoDB
-        mongodb.connect()
         
         # Check if index exists and we don't need to rebuild
         if not force_rebuild and os.path.exists(index_path) and os.path.exists(mapping_path):
@@ -99,17 +95,12 @@ class RAGEngine:
         df = df.dropna(subset=['transcription'])
         df = df.fillna('')
         
-        # Clear MongoDB transcriptions if rebuilding
-        if mongodb.is_connected():
-            mongodb.clear_transcriptions()
-        
         all_embeddings = []
         self.id_mapping = []
         self.documents_cache = {}
         
         batch_size = 100
         total_batches = (len(df) + batch_size - 1) // batch_size
-        mongo_docs = []
         
         print(f"Processing {len(df)} records...")
         
@@ -136,8 +127,8 @@ class RAGEngine:
                 documents.append(doc_text)
                 batch_ids.append(case_id)
                 
-                # Store in cache
-                doc_data = {
+                # Store in local cache
+                self.documents_cache[case_id] = {
                     "case_id": case_id,
                     "specialty": specialty,
                     "sample_name": sample_name,
@@ -145,11 +136,6 @@ class RAGEngine:
                     "keywords": keywords,
                     "description": description
                 }
-                self.documents_cache[case_id] = doc_data
-                
-                # Prepare for MongoDB
-                if mongodb.is_connected():
-                    mongo_docs.append(doc_data)
             
             if documents:
                 # Generate embeddings
@@ -157,22 +143,13 @@ class RAGEngine:
                 all_embeddings.extend(embeddings)
                 self.id_mapping.extend(batch_ids)
             
-            # Batch insert to MongoDB every 500 docs
-            if len(mongo_docs) >= 500:
-                mongodb.insert_many_transcriptions(mongo_docs)
-                mongo_docs = []
-            
             print(f"Processed batch {batch_num}/{total_batches}")
-        
-        # Insert remaining MongoDB docs
-        if mongo_docs and mongodb.is_connected():
-            mongodb.insert_many_transcriptions(mongo_docs)
         
         # Create FAISS index
         embeddings_matrix = np.array(all_embeddings).astype('float32')
         dimension = embeddings_matrix.shape[1]
         
-        # Use L2 distance index (can also use IndexFlatIP for inner product)
+        # Use L2 distance index
         self.faiss_index = faiss.IndexFlatL2(dimension)
         self.faiss_index.add(embeddings_matrix)
         
@@ -218,10 +195,8 @@ class RAGEngine:
             
             case_id = self.id_mapping[idx]
             
-            # Get document from cache or MongoDB
+            # Get document from local cache
             doc = self.documents_cache.get(case_id)
-            if not doc and mongodb.is_connected():
-                doc = mongodb.get_transcription_by_case_id(case_id)
             
             if not doc:
                 continue
@@ -259,11 +234,6 @@ class RAGEngine:
         if not self._initialized:
             raise RuntimeError("RAG Engine not initialized. Call initialize() first.")
         
-        # Try MongoDB first
-        if mongodb.is_connected():
-            return mongodb.get_all_specialties()
-        
-        # Fallback to cache
         specialties = set()
         for doc in self.documents_cache.values():
             specialty = doc.get('specialty', '')
@@ -285,7 +255,7 @@ class RAGEngine:
             "embedding_model": settings.EMBEDDING_MODEL,
             "num_specialties": len(specialties),
             "specialties": specialties[:10],
-            "mongodb_connected": mongodb.is_connected()
+            "storage": "FAISS + local pickle cache"
         }
 
 

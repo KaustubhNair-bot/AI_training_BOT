@@ -1,7 +1,7 @@
 """
 JWT Authentication Module
 Handles user authentication, token generation, and verification
-All authentication is performed locally - no data leaves the system
+User data stored in local JSON file - no external database required
 """
 from datetime import datetime, timedelta
 from typing import Optional
@@ -14,17 +14,16 @@ import os
 
 from app.config import settings
 from app.models import TokenData, UserCreate, UserResponse
-from app.database import mongodb
 
 # OAuth2 scheme for token extraction
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
-# Fallback file-based user storage (if MongoDB not available)
+# File-based user storage
 USERS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "users.json")
 
 
 def load_users_from_file() -> dict:
-    """Load users from JSON file (fallback)"""
+    """Load users from JSON file"""
     if os.path.exists(USERS_FILE):
         with open(USERS_FILE, "r") as f:
             return json.load(f)
@@ -32,7 +31,7 @@ def load_users_from_file() -> dict:
 
 
 def save_users_to_file(users: dict):
-    """Save users to JSON file (fallback)"""
+    """Save users to JSON file"""
     with open(USERS_FILE, "w") as f:
         json.dump(users, f, indent=2, default=str)
 
@@ -91,18 +90,10 @@ def verify_token(token: str) -> TokenData:
 
 
 def get_user_data(username: str) -> Optional[dict]:
-    """Get user data from MongoDB or file"""
-    # Try MongoDB first
-    if mongodb.is_connected():
-        user = mongodb.get_user(username)
-        if user:
-            return user
-    
-    # Fallback to file
+    """Get user data from JSON file"""
     users = load_users_from_file()
     if username in users:
         return {"username": username, **users[username]}
-    
     return None
 
 
@@ -138,28 +129,19 @@ def create_user(user_data: UserCreate) -> UserResponse:
         "created_at": created_at.isoformat()
     }
     
-    # Try MongoDB first
-    if mongodb.is_connected():
-        if not mongodb.create_user(user_doc):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already registered"
-            )
-    else:
-        # Fallback to file
-        users = load_users_from_file()
-        if user_data.username in users:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Username already registered"
-            )
-        users[user_data.username] = {
-            "password_hash": user_doc["password_hash"],
-            "full_name": user_doc["full_name"],
-            "specialty": user_doc["specialty"],
-            "created_at": user_doc["created_at"]
-        }
-        save_users_to_file(users)
+    users = load_users_from_file()
+    if user_data.username in users:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Username already registered"
+        )
+    users[user_data.username] = {
+        "password_hash": user_doc["password_hash"],
+        "full_name": user_doc["full_name"],
+        "specialty": user_doc["specialty"],
+        "created_at": user_doc["created_at"]
+    }
+    save_users_to_file(users)
     
     return UserResponse(
         username=user_data.username,

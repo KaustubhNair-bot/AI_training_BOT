@@ -393,7 +393,7 @@ def render_search_page():
         if stats:
             st.metric("Total Documents", stats.get("total_documents", 0))
             st.metric("Specialties", stats.get("num_specialties", 0))
-            st.metric("MongoDB", "Connected" if stats.get("mongodb_connected") else "File Mode")
+            st.metric("Storage", stats.get("storage", "FAISS + Local Cache"))
             st.metric("LLM Status", "Available" if stats.get("llm_available") else "Not Configured")
             if stats.get("llm_model"):
                 st.caption(f"Model: {stats['llm_model']}")

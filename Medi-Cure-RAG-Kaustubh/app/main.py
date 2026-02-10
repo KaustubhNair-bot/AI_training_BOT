@@ -19,7 +19,6 @@ from app.auth import (
 )
 from app.rag_engine import rag_engine
 from app.llm_engine import llm_engine
-from app.database import mongodb
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -52,9 +51,6 @@ async def startup_event():
     """Initialize services on startup"""
     print("Starting MediCure RAG API...")
     
-    # Connect to MongoDB
-    mongodb.connect()
-    
     # Create demo users
     create_demo_users()
     
@@ -65,12 +61,6 @@ async def startup_event():
     llm_engine.initialize()
     
     print("MediCure RAG API ready!")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    mongodb.close()
 
 
 # ============== Health Check ==============
