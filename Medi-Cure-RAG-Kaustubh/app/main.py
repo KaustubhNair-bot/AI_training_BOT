@@ -1,7 +1,7 @@
 """
 MediCure RAG System - FastAPI Backend
 A secure API for medical transcription search with JWT authentication
-All data processing happens locally - no patient data leaves the system
+Integrates FAISS-based RAG with Groq LLM for natural language answers
 """
 from datetime import timedelta
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -11,27 +11,30 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.config import settings
 from app.models import (
     UserCreate, Token, UserResponse,
-    SearchQuery, SearchResponse
+    SearchQuery, SearchResponse, AskQuery, LLMResponse
 )
 from app.auth import (
     create_access_token, authenticate_user, create_user,
     get_current_user, create_demo_users
 )
 from app.rag_engine import rag_engine
+from app.llm_engine import llm_engine
 from app.database import mongodb
 
 # Initialize FastAPI app
 app = FastAPI(
     title="MediCure RAG API",
     description="""
-    Secure RAG API for medical transcription search.
+    Secure RAG API for medical transcription search with LLM-powered answers.
     
     ## Features
-    - **Semantic Search**: Find similar medical cases using AI
+    - **Semantic Search**: Find similar medical cases using FAISS
+    - **RAG + LLM**: Get natural language answers grounded in retrieved cases
+    - **Base LLM**: Compare with answers without retrieval context
     - **JWT Authentication**: Secure access for authorized doctors
-    - **Local Processing**: All data stays on-premises
+    - **Local Embeddings**: All vectorization stays on-premises
     """,
-    version="1.0.0"
+    version="2.0.0"
 )
 
 # Add CORS middleware
@@ -58,6 +61,9 @@ async def startup_event():
     # Initialize RAG engine
     rag_engine.initialize()
     
+    # Initialize LLM engine
+    llm_engine.initialize()
+    
     print("MediCure RAG API ready!")
 
 
@@ -75,7 +81,9 @@ async def health_check():
     stats = rag_engine.get_stats()
     return {
         "status": "healthy",
-        "rag_engine": stats
+        "rag_engine": stats,
+        "llm_available": llm_engine.is_available(),
+        "llm_model": settings.GROQ_MODEL if llm_engine.is_available() else None
     }
 
 
@@ -116,7 +124,7 @@ async def get_current_user_info(current_user: UserResponse = Depends(get_current
     return current_user
 
 
-# ============== RAG Search ==============
+# ============== RAG Search (Retrieval Only) ==============
 
 @app.post("/search", response_model=SearchResponse, tags=["Search"])
 async def search_cases(
@@ -124,7 +132,7 @@ async def search_cases(
     current_user: UserResponse = Depends(get_current_user)
 ):
     """
-    Search for similar medical cases using RAG.
+    Search for similar medical cases using semantic search (retrieval only).
     
     **Requires authentication.**
     """
@@ -141,6 +149,130 @@ async def search_cases(
         )
 
 
+# ============== RAG + LLM (Full Pipeline) ==============
+
+@app.post("/ask", response_model=LLMResponse, tags=["RAG + LLM"])
+async def ask_rag(
+    query: AskQuery,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Ask a medical question and get an LLM-generated answer grounded in retrieved cases.
+    
+    This is the full RAG pipeline:
+    1. Retrieve similar cases from FAISS
+    2. Pass retrieved cases as context to the LLM
+    3. LLM generates a natural language answer based on the context
+    
+    **Requires authentication.**
+    """
+    if not llm_engine.is_available():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LLM service not available. Set GROQ_API_KEY in .env"
+        )
+    
+    try:
+        # Step 1: Retrieve relevant cases
+        search_response = rag_engine.search(
+            query=query.query,
+            top_k=query.top_k,
+            specialty_filter=query.specialty_filter
+        )
+        
+        # Step 2: Prepare contexts for LLM
+        contexts = []
+        for result in search_response.results:
+            contexts.append({
+                "case_id": result.case_id,
+                "specialty": result.specialty,
+                "sample_name": result.sample_name,
+                "transcription": result.transcription,
+                "similarity_score": result.similarity_score
+            })
+        
+        # Step 3: Generate answer with LLM
+        llm_result = llm_engine.generate_rag_answer(
+            query=query.query,
+            retrieved_contexts=contexts
+        )
+        
+        if "error" in llm_result:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=llm_result["error"]
+            )
+        
+        return LLMResponse(
+            query=query.query,
+            answer=llm_result["answer"],
+            model=llm_result["model"],
+            mode="rag",
+            llm_time_ms=llm_result["llm_time_ms"],
+            tokens_used=llm_result["tokens_used"],
+            num_contexts=llm_result["num_contexts"],
+            retrieved_cases=search_response.results,
+            retrieval_time_ms=search_response.search_time_ms
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"RAG+LLM error: {str(e)}"
+        )
+
+
+# ============== Base LLM (No Context - For Comparison) ==============
+
+@app.post("/ask-base", response_model=LLMResponse, tags=["RAG + LLM"])
+async def ask_base_llm(
+    query: AskQuery,
+    current_user: UserResponse = Depends(get_current_user)
+):
+    """
+    Ask a medical question and get an answer from the base LLM WITHOUT any retrieved context.
+    
+    This endpoint is for comparison purposes to demonstrate the value of RAG.
+    The LLM answers purely from its training data.
+    
+    **Requires authentication.**
+    """
+    if not llm_engine.is_available():
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="LLM service not available. Set GROQ_API_KEY in .env"
+        )
+    
+    try:
+        llm_result = llm_engine.generate_base_answer(query=query.query)
+        
+        if "error" in llm_result:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=llm_result["error"]
+            )
+        
+        return LLMResponse(
+            query=query.query,
+            answer=llm_result["answer"],
+            model=llm_result["model"],
+            mode="base_llm",
+            llm_time_ms=llm_result["llm_time_ms"],
+            tokens_used=llm_result["tokens_used"],
+            num_contexts=0,
+            retrieved_cases=None,
+            retrieval_time_ms=None
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Base LLM error: {str(e)}"
+        )
+
+
 @app.get("/specialties", response_model=list[str], tags=["Search"])
 async def get_specialties(current_user: UserResponse = Depends(get_current_user)):
     """Get list of available medical specialties"""
@@ -150,7 +282,10 @@ async def get_specialties(current_user: UserResponse = Depends(get_current_user)
 @app.get("/stats", tags=["System"])
 async def get_system_stats(current_user: UserResponse = Depends(get_current_user)):
     """Get system statistics"""
-    return rag_engine.get_stats()
+    stats = rag_engine.get_stats()
+    stats["llm_available"] = llm_engine.is_available()
+    stats["llm_model"] = settings.GROQ_MODEL if llm_engine.is_available() else None
+    return stats
 
 
 if __name__ == "__main__":

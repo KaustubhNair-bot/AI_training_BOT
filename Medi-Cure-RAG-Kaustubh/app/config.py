@@ -27,6 +27,10 @@ class Settings:
     # Embedding model (runs locally - no external API calls)
     EMBEDDING_MODEL: str = os.getenv("EMBEDDING_MODEL", "all-MiniLM-L6-v2")
     
+    # Groq LLM Configuration
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+    
     # Server configuration
     API_HOST: str = os.getenv("API_HOST", "127.0.0.1")
     API_PORT: int = int(os.getenv("API_PORT", "8000"))

@@ -1,6 +1,7 @@
 """
 MediCure RAG - Streamlit UI
-A secure medical case search interface for healthcare professionals
+A secure medical case search interface with LLM-powered answers
+Supports RAG mode and Base LLM comparison
 """
 import streamlit as st
 import requests
@@ -20,25 +21,15 @@ st.set_page_config(
 # Custom CSS for premium styling
 st.markdown("""
 <style>
-    /* Main theme colors */
-    :root {
-        --primary-color: #3b82f6;
-        --secondary-color: #14b8a6;
-        --bg-dark: #0f172a;
-        --card-bg: rgba(30, 41, 59, 0.8);
-    }
-    
     /* Hide Streamlit branding */
     #MainMenu {visibility: hidden;}
     footer {visibility: hidden;}
     
-    /* Main container styling */
     .main .block-container {
         padding-top: 2rem;
         padding-bottom: 2rem;
     }
     
-    /* Header styling */
     .main-header {
         background: linear-gradient(135deg, #1e3a8a 0%, #0d9488 100%);
         padding: 2rem;
@@ -48,32 +39,8 @@ st.markdown("""
         box-shadow: 0 10px 40px rgba(59, 130, 246, 0.2);
     }
     
-    .main-header h1 {
-        color: white;
-        font-size: 2.5rem;
-        margin-bottom: 0.5rem;
-    }
-    
-    .main-header p {
-        color: rgba(255, 255, 255, 0.8);
-        font-size: 1.1rem;
-    }
-    
-    /* Card styling */
-    .result-card {
-        background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
-        border: 1px solid rgba(59, 130, 246, 0.2);
-        border-radius: 1rem;
-        padding: 1.5rem;
-        margin-bottom: 1rem;
-        transition: all 0.3s ease;
-    }
-    
-    .result-card:hover {
-        border-color: rgba(59, 130, 246, 0.5);
-        box-shadow: 0 8px 30px rgba(59, 130, 246, 0.15);
-        transform: translateY(-2px);
-    }
+    .main-header h1 { color: white; font-size: 2.5rem; margin-bottom: 0.5rem; }
+    .main-header p { color: rgba(255, 255, 255, 0.8); font-size: 1.1rem; }
     
     .specialty-badge {
         display: inline-block;
@@ -105,7 +72,6 @@ st.markdown("""
         margin: 0.15rem;
     }
     
-    /* Security badge */
     .security-badge {
         background: rgba(16, 185, 129, 0.1);
         border: 1px solid rgba(16, 185, 129, 0.3);
@@ -118,32 +84,42 @@ st.markdown("""
         gap: 0.5rem;
     }
     
-    /* Stats cards */
-    .stat-card {
+    .rag-answer-box {
         background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
-        border: 1px solid rgba(148, 163, 184, 0.2);
-        border-radius: 0.75rem;
-        padding: 1rem;
-        text-align: center;
+        border: 1px solid rgba(59, 130, 246, 0.3);
+        border-radius: 1rem;
+        padding: 1.5rem;
+        margin: 1rem 0;
     }
     
-    .stat-value {
-        font-size: 2rem;
-        font-weight: 700;
+    .base-answer-box {
+        background: linear-gradient(145deg, #1e293b 0%, #0f172a 100%);
+        border: 1px solid rgba(234, 179, 8, 0.3);
+        border-radius: 1rem;
+        padding: 1.5rem;
+        margin: 1rem 0;
+    }
+    
+    .mode-tag-rag {
+        display: inline-block;
+        background: rgba(59, 130, 246, 0.2);
         color: #60a5fa;
+        padding: 0.2rem 0.6rem;
+        border-radius: 0.25rem;
+        font-size: 0.8rem;
+        font-weight: 600;
     }
     
-    .stat-label {
-        color: #94a3b8;
-        font-size: 0.9rem;
+    .mode-tag-base {
+        display: inline-block;
+        background: rgba(234, 179, 8, 0.2);
+        color: #eab308;
+        padding: 0.2rem 0.6rem;
+        border-radius: 0.25rem;
+        font-size: 0.8rem;
+        font-weight: 600;
     }
     
-    /* Sidebar styling */
-    .css-1d391kg {
-        background: linear-gradient(180deg, #1e293b 0%, #0f172a 100%);
-    }
-    
-    /* Button styling */
     .stButton > button {
         background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
         color: white;
@@ -158,33 +134,27 @@ st.markdown("""
         background: linear-gradient(135deg, #60a5fa 0%, #3b82f6 100%);
         box-shadow: 0 4px 15px rgba(59, 130, 246, 0.4);
     }
-    
-    /* Input styling */
-    .stTextInput > div > div > input {
-        background: #1e293b;
-        border: 1px solid #334155;
-        border-radius: 0.5rem;
-        color: white;
-    }
-    
-    .stSelectbox > div > div {
-        background: #1e293b;
-        border-radius: 0.5rem;
-    }
 </style>
 """, unsafe_allow_html=True)
 
 
 def init_session_state():
     """Initialize session state variables"""
-    if 'authenticated' not in st.session_state:
-        st.session_state.authenticated = False
-    if 'token' not in st.session_state:
-        st.session_state.token = None
-    if 'user' not in st.session_state:
-        st.session_state.user = None
-    if 'specialties' not in st.session_state:
-        st.session_state.specialties = []
+    defaults = {
+        'authenticated': False,
+        'token': None,
+        'user': None,
+        'specialties': [],
+        'llm_available': False,
+    }
+    for key, value in defaults.items():
+        if key not in st.session_state:
+            st.session_state[key] = value
+
+
+def api_headers():
+    """Get authorization headers"""
+    return {"Authorization": f"Bearer {st.session_state.token}"}
 
 
 def login(username: str, password: str) -> bool:
@@ -200,24 +170,22 @@ def login(username: str, password: str) -> bool:
             data = response.json()
             st.session_state.token = data["access_token"]
             
-            # Get user info
             user_response = requests.get(
                 f"{API_BASE_URL}/auth/me",
-                headers={"Authorization": f"Bearer {st.session_state.token}"},
+                headers=api_headers(),
                 timeout=10
             )
             
             if user_response.status_code == 200:
                 st.session_state.user = user_response.json()
                 st.session_state.authenticated = True
-                
-                # Load specialties
                 load_specialties()
+                check_llm_status()
                 return True
         
         return False
     except requests.exceptions.ConnectionError:
-        st.error("🔌 Cannot connect to the API server. Please make sure the backend is running.")
+        st.error("Cannot connect to the API server. Please make sure the backend is running.")
         return False
     except Exception as e:
         st.error(f"Login error: {str(e)}")
@@ -226,46 +194,42 @@ def login(username: str, password: str) -> bool:
 
 def logout():
     """Clear session and logout"""
-    st.session_state.authenticated = False
-    st.session_state.token = None
-    st.session_state.user = None
-    st.session_state.specialties = []
+    for key in ['authenticated', 'token', 'user', 'specialties', 'llm_available']:
+        st.session_state[key] = False if key in ['authenticated', 'llm_available'] else ([] if key == 'specialties' else None)
 
 
 def load_specialties():
     """Load available medical specialties"""
     try:
-        response = requests.get(
-            f"{API_BASE_URL}/specialties",
-            headers={"Authorization": f"Bearer {st.session_state.token}"},
-            timeout=10
-        )
-        
+        response = requests.get(f"{API_BASE_URL}/specialties", headers=api_headers(), timeout=10)
         if response.status_code == 200:
             st.session_state.specialties = response.json()
     except:
         st.session_state.specialties = []
 
 
-def search_cases(query: str, top_k: int, specialty_filter: str = None):
-    """Search for similar medical cases"""
+def check_llm_status():
+    """Check if LLM is available"""
     try:
-        search_body = {
-            "query": query,
-            "top_k": top_k
-        }
-        
+        response = requests.get(f"{API_BASE_URL}/stats", headers=api_headers(), timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            st.session_state.llm_available = data.get("llm_available", False)
+    except:
+        st.session_state.llm_available = False
+
+
+def search_cases(query: str, top_k: int, specialty_filter: str = None):
+    """Search for similar medical cases (retrieval only)"""
+    try:
+        body = {"query": query, "top_k": top_k}
         if specialty_filter:
-            search_body["specialty_filter"] = specialty_filter
+            body["specialty_filter"] = specialty_filter
         
         response = requests.post(
             f"{API_BASE_URL}/search",
-            headers={
-                "Authorization": f"Bearer {st.session_state.token}",
-                "Content-Type": "application/json"
-            },
-            json=search_body,
-            timeout=30
+            headers={**api_headers(), "Content-Type": "application/json"},
+            json=body, timeout=30
         )
         
         if response.status_code == 200:
@@ -273,27 +237,65 @@ def search_cases(query: str, top_k: int, specialty_filter: str = None):
         elif response.status_code == 401:
             st.session_state.authenticated = False
             st.error("Session expired. Please login again.")
-            return None
         else:
             st.error(f"Search failed: {response.text}")
-            return None
+        return None
     except requests.exceptions.ConnectionError:
-        st.error("🔌 Cannot connect to the API server.")
+        st.error("Cannot connect to the API server.")
         return None
     except Exception as e:
         st.error(f"Search error: {str(e)}")
         return None
 
 
+def ask_rag(query: str, top_k: int, specialty_filter: str = None):
+    """Ask a question using RAG + LLM"""
+    try:
+        body = {"query": query, "top_k": top_k}
+        if specialty_filter:
+            body["specialty_filter"] = specialty_filter
+        
+        response = requests.post(
+            f"{API_BASE_URL}/ask",
+            headers={**api_headers(), "Content-Type": "application/json"},
+            json=body, timeout=60
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"RAG+LLM failed: {response.text}")
+        return None
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return None
+
+
+def ask_base_llm(query: str):
+    """Ask a question using base LLM only"""
+    try:
+        body = {"query": query, "top_k": 5}
+        
+        response = requests.post(
+            f"{API_BASE_URL}/ask-base",
+            headers={**api_headers(), "Content-Type": "application/json"},
+            json=body, timeout=60
+        )
+        
+        if response.status_code == 200:
+            return response.json()
+        else:
+            st.error(f"Base LLM failed: {response.text}")
+        return None
+    except Exception as e:
+        st.error(f"Error: {str(e)}")
+        return None
+
+
 def get_system_stats():
     """Get system statistics"""
     try:
-        response = requests.get(
-            f"{API_BASE_URL}/stats",
-            headers={"Authorization": f"Bearer {st.session_state.token}"},
-            timeout=10
-        )
-        
+        response = requests.get(f"{API_BASE_URL}/stats", headers=api_headers(), timeout=10)
         if response.status_code == 200:
             return response.json()
         return None
@@ -305,22 +307,21 @@ def render_login_page():
     """Render the login page"""
     st.markdown("""
     <div class="main-header">
-        <h1>🏥 MediCure RAG</h1>
-        <p>Secure AI-Powered Medical Case Search System</p>
+        <h1>MediCure RAG</h1>
+        <p>Secure AI-Powered Medical Case Search with LLM Integration</p>
     </div>
     """, unsafe_allow_html=True)
     
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col2:
-        st.markdown("### 👨‍⚕️ Doctor Login")
+        st.markdown("### Doctor Login")
         st.markdown("Access the secure medical case search system")
         
         with st.form("login_form"):
             username = st.text_input("Username", placeholder="Enter your username")
             password = st.text_input("Password", type="password", placeholder="Enter your password")
-            
-            submitted = st.form_submit_button("🔐 Sign In", use_container_width=True)
+            submitted = st.form_submit_button("Sign In", use_container_width=True)
             
             if submitted:
                 if username and password:
@@ -335,132 +336,223 @@ def render_login_page():
         
         st.markdown("---")
         st.markdown("**Demo Accounts:**")
-        st.code("""
-dr.smith / doctor123
-dr.jones / doctor123  
-dr.patel / doctor123
-        """)
+        st.code("dr.smith / doctor123\ndr.jones / doctor123\ndr.patel / doctor123")
         
         st.markdown("""
         <div class="security-badge">
-            🔒 All data is processed locally - Patient data never leaves the system
+            All embeddings processed locally - LLM queries sent to Groq API
         </div>
         """, unsafe_allow_html=True)
 
 
+def render_result_cards(results):
+    """Render search result cards"""
+    for i, result in enumerate(results):
+        score_percent = int(result['similarity_score'] * 100)
+        
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            st.markdown(f"**{result['sample_name']}**")
+        with col2:
+            st.markdown(f'<span class="score-badge">{score_percent}% Match</span>', unsafe_allow_html=True)
+        
+        st.markdown(f"""
+        <span class="specialty-badge">{result['specialty']}</span>
+        <span style="color: #64748b; margin-left: 0.5rem;">Case #{result['case_id']}</span>
+        """, unsafe_allow_html=True)
+        
+        with st.expander("View Full Transcription", expanded=False):
+            st.markdown(result['transcription'])
+        
+        if result.get('keywords'):
+            keywords = [k.strip() for k in result['keywords'].split(',')[:6] if k.strip()]
+            if keywords:
+                keyword_html = " ".join([f'<span class="keyword-tag">{k}</span>' for k in keywords])
+                st.markdown(f"Keywords: {keyword_html}", unsafe_allow_html=True)
+        
+        st.markdown("---")
+
+
 def render_search_page():
-    """Render the search page"""
+    """Render the main search page"""
     # Sidebar
     with st.sidebar:
-        st.markdown("### 👤 User Info")
+        st.markdown("### User Info")
         if st.session_state.user:
             st.markdown(f"**{st.session_state.user.get('full_name', 'Doctor')}**")
             st.markdown(f"*{st.session_state.user.get('specialty', 'General')}*")
         
-        if st.button("🚪 Logout", use_container_width=True):
+        if st.button("Logout", use_container_width=True):
             logout()
             st.rerun()
         
         st.markdown("---")
         
-        # System stats
-        st.markdown("### 📊 System Stats")
+        st.markdown("### System Stats")
         stats = get_system_stats()
         if stats:
             st.metric("Total Documents", stats.get("total_documents", 0))
             st.metric("Specialties", stats.get("num_specialties", 0))
-            st.metric("MongoDB", "✅ Connected" if stats.get("mongodb_connected") else "⚠️ File Mode")
+            st.metric("MongoDB", "Connected" if stats.get("mongodb_connected") else "File Mode")
+            st.metric("LLM Status", "Available" if stats.get("llm_available") else "Not Configured")
+            if stats.get("llm_model"):
+                st.caption(f"Model: {stats['llm_model']}")
         
         st.markdown("---")
         st.markdown("""
         <div class="security-badge">
-            🔒 Secure Local Processing
+            Secure Local Embeddings
         </div>
         """, unsafe_allow_html=True)
     
     # Main content
     st.markdown("""
     <div class="main-header">
-        <h1>🏥 MediCure RAG</h1>
-        <p>Search for similar medical cases using AI-powered semantic search</p>
+        <h1>MediCure RAG</h1>
+        <p>AI-Powered Medical Case Search with LLM-Generated Answers</p>
     </div>
     """, unsafe_allow_html=True)
     
-    # Search form
-    st.markdown("### 🔍 Search Medical Cases")
+    # Mode selection tabs
+    if st.session_state.llm_available:
+        tab1, tab2, tab3 = st.tabs(["Retrieval Search", "RAG + LLM Answer", "RAG vs Base LLM Comparison"])
+    else:
+        tab1 = st.tabs(["Retrieval Search"])[0]
+        tab2 = None
+        tab3 = None
+        st.info("LLM features not available. Set GROQ_API_KEY in .env to enable.")
     
-    col1, col2, col3 = st.columns([4, 1, 1])
-    
-    with col1:
-        query = st.text_input(
-            "Search Query",
-            placeholder="Describe symptoms, conditions, or medical terms...",
-            label_visibility="collapsed"
-        )
-    
-    with col2:
-        top_k = st.selectbox("Results", [5, 10, 15, 20], index=0)
-    
-    with col3:
-        specialty_options = ["All Specialties"] + st.session_state.specialties
-        specialty = st.selectbox("Specialty", specialty_options, index=0)
-    
-    search_button = st.button("🔍 Search", use_container_width=True, type="primary")
-    
-    # Search results
-    if search_button and query:
-        specialty_filter = None if specialty == "All Specialties" else specialty
+    # TAB 1: Retrieval Only Search
+    with tab1:
+        st.markdown("### Search Medical Cases")
+        st.caption("Find similar cases using semantic search (retrieval only, no LLM)")
         
-        with st.spinner("🔎 Searching medical cases..."):
-            results = search_cases(query, top_k, specialty_filter)
+        col1, col2, col3 = st.columns([4, 1, 1])
+        with col1:
+            query1 = st.text_input("Search Query", placeholder="Describe symptoms, conditions, or medical terms...", key="search_query", label_visibility="collapsed")
+        with col2:
+            top_k1 = st.selectbox("Results", [5, 10, 15, 20], index=0, key="search_topk")
+        with col3:
+            specialty_options = ["All Specialties"] + st.session_state.specialties
+            specialty1 = st.selectbox("Specialty", specialty_options, index=0, key="search_spec")
         
-        if results:
-            st.markdown("---")
+        if st.button("Search", use_container_width=True, type="primary", key="search_btn"):
+            if query1:
+                specialty_filter = None if specialty1 == "All Specialties" else specialty1
+                with st.spinner("Searching medical cases..."):
+                    results = search_cases(query1, top_k1, specialty_filter)
+                
+                if results:
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        st.info(f"Found **{results['total_results']}** matching cases")
+                    with col2:
+                        st.info(f"Search completed in **{results['search_time_ms']}ms**")
+                    
+                    if results['results']:
+                        render_result_cards(results['results'])
+                    else:
+                        st.warning("No matching cases found.")
+            else:
+                st.warning("Please enter a search query.")
+    
+    # TAB 2: RAG + LLM Answer
+    if tab2 is not None:
+        with tab2:
+            st.markdown("### Ask a Medical Question")
+            st.caption("Get an AI-generated answer grounded in retrieved medical cases")
             
-            # Stats
-            col1, col2 = st.columns(2)
+            col1, col2, col3 = st.columns([4, 1, 1])
             with col1:
-                st.info(f"📋 Found **{results['total_results']}** matching cases")
+                query2 = st.text_input("Your Question", placeholder="Ask a medical question...", key="ask_query", label_visibility="collapsed")
             with col2:
-                st.info(f"⏱️ Search completed in **{results['search_time_ms']}ms**")
+                top_k2 = st.selectbox("Context Cases", [3, 5, 7, 10], index=1, key="ask_topk")
+            with col3:
+                specialty2 = st.selectbox("Specialty", specialty_options, index=0, key="ask_spec")
             
-            # Results
-            if results['results']:
-                for i, result in enumerate(results['results']):
-                    with st.container():
-                        score_percent = int(result['similarity_score'] * 100)
-                        
-                        # Header with badges
-                        col1, col2 = st.columns([3, 1])
-                        with col1:
-                            st.markdown(f"### {result['sample_name']}")
-                        with col2:
-                            st.markdown(f"""
-                            <span class="score-badge">{score_percent}% Match</span>
-                            """, unsafe_allow_html=True)
-                        
-                        st.markdown(f"""
-                        <span class="specialty-badge">{result['specialty']}</span>
-                        <span style="color: #64748b; margin-left: 1rem;">Case #{result['case_id']}</span>
-                        """, unsafe_allow_html=True)
-                        
-                        # Transcription
-                        with st.expander("📄 View Full Transcription", expanded=i == 0):
-                            st.markdown(result['transcription'])
-                        
-                        # Keywords
-                        if result.get('keywords'):
-                            keywords = [k.strip() for k in result['keywords'].split(',')[:8] if k.strip()]
-                            if keywords:
-                                keyword_html = " ".join([f'<span class="keyword-tag">{k}</span>' for k in keywords])
-                                st.markdown(f"**Keywords:** {keyword_html}", unsafe_allow_html=True)
+            if st.button("Ask RAG", use_container_width=True, type="primary", key="ask_btn"):
+                if query2:
+                    specialty_filter = None if specialty2 == "All Specialties" else specialty2
+                    with st.spinner("Retrieving cases and generating answer..."):
+                        result = ask_rag(query2, top_k2, specialty_filter)
+                    
+                    if result:
+                        st.markdown(f'<span class="mode-tag-rag">RAG + LLM Answer</span>', unsafe_allow_html=True)
+                        st.markdown(f"**Model:** {result['model']} | **LLM Time:** {result['llm_time_ms']:.0f}ms | **Retrieval Time:** {result.get('retrieval_time_ms', 0):.0f}ms | **Tokens:** {result['tokens_used']['total_tokens']}")
                         
                         st.markdown("---")
-            else:
-                st.warning("No matching cases found. Try adjusting your search terms.")
+                        st.markdown(result['answer'])
+                        
+                        if result.get('retrieved_cases'):
+                            st.markdown("---")
+                            st.markdown("### Retrieved Source Cases")
+                            render_result_cards(result['retrieved_cases'])
+                else:
+                    st.warning("Please enter a question.")
     
-    elif search_button:
-        st.warning("Please enter a search query.")
+    # TAB 3: Comparison Mode
+    if tab3 is not None:
+        with tab3:
+            st.markdown("### RAG vs Base LLM Comparison")
+            st.caption("Compare answers from RAG-augmented LLM vs base LLM to evaluate RAG effectiveness")
+            
+            query3 = st.text_input("Medical Question", placeholder="Enter a medical question to compare...", key="compare_query", label_visibility="collapsed")
+            
+            col1, col2 = st.columns(2)
+            with col1:
+                top_k3 = st.selectbox("Context Cases for RAG", [3, 5, 7], index=1, key="compare_topk")
+            with col2:
+                specialty3 = st.selectbox("Specialty Filter", specialty_options, index=0, key="compare_spec")
+            
+            if st.button("Compare RAG vs Base LLM", use_container_width=True, type="primary", key="compare_btn"):
+                if query3:
+                    specialty_filter = None if specialty3 == "All Specialties" else specialty3
+                    
+                    col_rag, col_base = st.columns(2)
+                    
+                    with col_rag:
+                        st.markdown(f'<span class="mode-tag-rag">RAG + LLM</span>', unsafe_allow_html=True)
+                        with st.spinner("Running RAG pipeline..."):
+                            rag_result = ask_rag(query3, top_k3, specialty_filter)
+                    
+                    with col_base:
+                        st.markdown(f'<span class="mode-tag-base">Base LLM (No Context)</span>', unsafe_allow_html=True)
+                        with st.spinner("Querying base LLM..."):
+                            base_result = ask_base_llm(query3)
+                    
+                    if rag_result and base_result:
+                        col_rag, col_base = st.columns(2)
+                        
+                        with col_rag:
+                            st.caption(f"Model: {rag_result['model']} | Time: {rag_result['llm_time_ms']:.0f}ms | Tokens: {rag_result['tokens_used']['total_tokens']} | Cases: {rag_result['num_contexts']}")
+                            st.markdown("---")
+                            st.markdown(rag_result['answer'])
+                            
+                            if rag_result.get('retrieved_cases'):
+                                with st.expander("View Retrieved Cases"):
+                                    for case in rag_result['retrieved_cases']:
+                                        score_pct = int(case['similarity_score'] * 100)
+                                        st.markdown(f"**{case['sample_name']}** ({case['specialty']}) - {score_pct}% match")
+                        
+                        with col_base:
+                            st.caption(f"Model: {base_result['model']} | Time: {base_result['llm_time_ms']:.0f}ms | Tokens: {base_result['tokens_used']['total_tokens']} | No context")
+                            st.markdown("---")
+                            st.markdown(base_result['answer'])
+                        
+                        # Comparison stats
+                        st.markdown("---")
+                        st.markdown("### Comparison Summary")
+                        c1, c2, c3, c4 = st.columns(4)
+                        with c1:
+                            st.metric("RAG Tokens", rag_result['tokens_used']['total_tokens'])
+                        with c2:
+                            st.metric("Base LLM Tokens", base_result['tokens_used']['total_tokens'])
+                        with c3:
+                            st.metric("RAG Time", f"{rag_result['llm_time_ms']:.0f}ms")
+                        with c4:
+                            st.metric("Base Time", f"{base_result['llm_time_ms']:.0f}ms")
+                else:
+                    st.warning("Please enter a question.")
 
 
 def main():

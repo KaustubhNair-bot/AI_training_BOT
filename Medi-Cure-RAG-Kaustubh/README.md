@@ -1,6 +1,6 @@
 # MediCure RAG System
 
-A secure Retrieval Augmented Generation (RAG) system designed for healthcare professionals to search through medical transcriptions using semantic search. The system ensures complete patient data privacy by processing all data locally.
+A secure Retrieval Augmented Generation (RAG) system designed for healthcare professionals to search through medical transcriptions using semantic search, integrated with an LLM for natural language answer generation.
 
 ---
 
@@ -9,21 +9,29 @@ A secure Retrieval Augmented Generation (RAG) system designed for healthcare pro
 1. [Overview](#overview)
 2. [Problem Statement](#problem-statement)
 3. [Solution Architecture](#solution-architecture)
-4. [Features](#features)
-5. [Technology Stack](#technology-stack)
+4. [Tech Stack Justification](#tech-stack-justification)
+5. [Features](#features)
 6. [Project Structure](#project-structure)
 7. [Setup and Installation](#setup-and-installation)
 8. [Running the Application](#running-the-application)
-9. [Usage Guide](#usage-guide)
-10. [API Documentation](#api-documentation)
-11. [Security Considerations](#security-considerations)
-12. [Author](#author)
+9. [Running the Evaluation](#running-the-evaluation)
+10. [Usage Guide](#usage-guide)
+11. [API Documentation](#api-documentation)
+12. [Security Considerations](#security-considerations)
+13. [RAG vs Base LLM Evaluation](#rag-vs-base-llm-evaluation)
+14. [Author](#author)
 
 ---
 
 ## Overview
 
-MediCure RAG is an AI-powered medical case search system that enables doctors to find similar patient cases based on symptoms, conditions, or medical procedures. The system uses vector embeddings and semantic search to retrieve relevant medical transcriptions from a knowledge base of approximately 5,000 medical records.
+MediCure RAG is an AI-powered medical case search system that enables doctors to find similar patient cases based on symptoms, conditions, or medical procedures. The system combines:
+
+1. **FAISS-based vector search** for efficient retrieval of similar medical transcriptions
+2. **Groq LLM integration** (Llama 3.3 70B) for generating natural language answers grounded in retrieved cases
+3. **JWT authentication** for secure access control
+4. **MongoDB** for document storage and metadata management
+5. **Streamlit** for a modern, interactive web interface
 
 ---
 
@@ -31,14 +39,14 @@ MediCure RAG is an AI-powered medical case search system that enables doctors to
 
 A private hospital with thousands of unstructured patient notes required a secure AI system that allows doctors to:
 
-1. **Search for past cases with similar symptoms** - Using RAG (Retrieval Augmented Generation) for intelligent semantic search
-2. **Protect Patient Data** - Ensuring no data leaves the system, with access restricted to authorized doctors only through JWT authentication
+1. Search for past cases with similar symptoms using RAG for intelligent semantic search
+2. Get AI-generated natural language answers grounded in actual patient records
+3. Protect patient data with local processing and access control through JWT authentication
+4. Compare the effectiveness of RAG against a standalone LLM
 
 ---
 
 ## Solution Architecture
-
-The system is built with a three-tier architecture:
 
 ```
 +-------------------+     +-------------------+     +-------------------+
@@ -46,72 +54,139 @@ The system is built with a three-tier architecture:
 |   (Port 8501)     |     |   (Port 8000)     |     |                   |
 +-------------------+     +-------------------+     +-------------------+
                                    |
-                    +--------------+--------------+
-                    |              |              |
-              +----------+  +----------+  +----------+
-              |   JWT    |  |   RAG    |  | MongoDB  |
-              |   Auth   |  |  Engine  |  |  Store   |
-              +----------+  +----------+  +----------+
-                                 |
-                    +------------+------------+
-                    |            |            |
-              +----------+  +----------+  +----------+
-              |  FAISS   |  | Sentence |  |   CSV    |
-              |  Index   |  | Transf.  |  |   Data   |
-              +----------+  +----------+  +----------+
+                    +--------------+--------------+--------------+
+                    |              |              |              |
+              +----------+  +----------+  +----------+  +----------+
+              |   JWT    |  |   RAG    |  |   LLM    |  | MongoDB  |
+              |   Auth   |  |  Engine  |  |  Engine  |  |  Store   |
+              +----------+  +----------+  +----------+  +----------+
+                                 |              |
+                    +------------+         +----+----+
+                    |            |         |         |
+              +----------+  +----------+  |  Groq   |
+              |  FAISS   |  | Sentence |  |  API    |
+              |  Index   |  | Transf.  |  +---------+
+              +----------+  +----------+
+                (Local)       (Local)      (External)
 ```
 
-### Components
+### Pipeline Flow
 
-1. **Streamlit UI**: A modern web interface for doctors to login and search medical cases
-2. **FastAPI Backend**: REST API with JWT authentication protecting all search endpoints
-3. **RAG Engine**: Combines FAISS vector indexing with sentence-transformers for semantic search
-4. **MongoDB**: Stores document metadata and user credentials (with file-based fallback)
-5. **FAISS Index**: Efficient similarity search on vector embeddings
+**RAG Pipeline (Full):**
+```
+User Query -> Embed Query (local) -> FAISS Search -> Retrieve Top-K Cases
+           -> Pass Cases as Context to LLM (Groq) -> Generate Grounded Answer
+```
+
+**Base LLM Pipeline (Comparison):**
+```
+User Query -> Send directly to LLM (Groq) -> Generate Answer (no context)
+```
+
+---
+
+## Tech Stack Justification
+
+### Why FAISS over ChromaDB?
+
+| Criteria | FAISS | ChromaDB |
+|----------|-------|----------|
+| Python 3.14 Compatibility | Full support | Broken (pydantic v1 incompatibility) |
+| Performance | Excellent - Optimized C++ with Python bindings | Good - Pure Python |
+| Index Size Efficiency | Compact binary format | Larger SQLite-based storage |
+| Maturity | Production-proven (Meta/Facebook) | Relatively newer |
+| Memory Overhead | Minimal | Higher due to embedded server |
+| Dependencies | Lightweight | Heavy (pydantic v1, grpcio, etc.) |
+
+**Decision:** ChromaDB failed to initialize on Python 3.14 due to its dependency on pydantic v1's `BaseSettings`, which is incompatible. FAISS provides better performance with fewer dependencies and full compatibility.
+
+### Why MongoDB?
+
+| Criteria | MongoDB | SQLite | File-based JSON |
+|----------|---------|--------|-----------------|
+| Query Flexibility | Rich query language | SQL | Manual parsing |
+| Scalability | Excellent | Limited | Poor |
+| Document Storage | Native (BSON) | Requires ORM | Manual serialization |
+| Concurrency | Multi-process safe | Limited | Unsafe |
+| Indexing | Auto-indexing | Manual | None |
+
+**Decision:** MongoDB's document-oriented model naturally fits medical transcriptions (unstructured documents with metadata). It provides efficient querying by specialty, case ID, and keywords. The system includes a file-based fallback for environments without MongoDB.
+
+### Why Groq API for LLM?
+
+| Criteria | Groq | OpenAI | Local LLM (Ollama) |
+|----------|------|--------|---------------------|
+| Speed | Fastest inference (custom LPU) | Standard | Slow (hardware-dependent) |
+| Cost | Generous free tier | Paid from start | Free but resource-heavy |
+| Model Quality | Llama 3.3 70B (state-of-art open model) | GPT-4 | Limited by local hardware |
+| Setup Complexity | API key only | API key only | Requires GPU, model download |
+| Privacy Consideration | Queries sent to API | Queries sent to API | Fully local |
+
+**Decision:** Groq provides the fastest inference speed for large language models using their custom LPU (Language Processing Unit) hardware. The Llama 3.3 70B model available through Groq offers excellent medical knowledge while being an open-source model. For a production healthcare deployment, a local LLM would be preferred for full data privacy.
+
+### Why Sentence-Transformers (all-MiniLM-L6-v2)?
+
+| Criteria | all-MiniLM-L6-v2 | OpenAI Embeddings | BiomedBERT |
+|----------|-------------------|-------------------|------------|
+| Data Privacy | Fully local | Cloud API | Fully local |
+| Model Size | ~80MB | N/A (API) | ~400MB |
+| Speed | Fast | Network-dependent | Moderate |
+| Embedding Dimension | 384 | 1536 | 768 |
+| Quality for Medical Text | Good | Excellent | Best for medical |
+| Setup | pip install only | API key required | Specialized setup |
+
+**Decision:** all-MiniLM-L6-v2 runs entirely locally, ensuring no patient data leaves the system during the embedding process. It provides a good balance of speed, accuracy, and size. All embeddings are generated on-premises.
+
+### Why Streamlit?
+
+| Criteria | Streamlit | HTML/CSS/JS | Gradio | Flask+Templates |
+|----------|-----------|-------------|--------|-----------------|
+| Development Speed | Very fast | Slow | Fast | Moderate |
+| Python-native | Yes | No | Yes | Partial |
+| Interactive Widgets | Built-in | Manual JS | Built-in | Manual |
+| Session Management | Built-in | Manual | Limited | Manual |
+| Deployment | Simple | Requires server | Simple | Moderate |
+
+**Decision:** Streamlit allows rapid development of interactive data applications in pure Python. Its built-in session state, widgets, and layout system make it ideal for building a medical search interface without frontend development overhead.
+
+### Why FastAPI?
+
+| Criteria | FastAPI | Flask | Django |
+|----------|---------|-------|--------|
+| Performance | Async, high performance | Sync, moderate | Sync, moderate |
+| API Documentation | Auto-generated (Swagger) | Manual | Manual |
+| Type Validation | Pydantic (automatic) | Manual | Forms/Serializers |
+| Modern Python | async/await native | Sync | Sync |
+| JWT Support | Easy integration | Manual | django-rest-framework |
+
+**Decision:** FastAPI provides automatic API documentation, request validation through Pydantic models, and native async support. Its automatic Swagger UI at `/docs` makes API testing straightforward.
 
 ---
 
 ## Features
 
-### Semantic Search (RAG)
-- AI-powered search using sentence-transformers embeddings
-- FAISS-based vector similarity search for fast retrieval
+### Semantic Search (Retrieval)
+- FAISS-based vector similarity search
+- sentence-transformers for local embedding generation
 - Filter results by medical specialty
 - Ranked results with similarity scores
-- Support for natural language queries
+
+### RAG + LLM Answer Generation
+- Retrieved cases passed as context to Groq LLM
+- Natural language answers grounded in actual patient records
+- Case references and citations in generated answers
+- Reduced hallucination through context grounding
+
+### RAG vs Base LLM Comparison
+- Side-by-side comparison in the UI
+- Automated evaluation script with multiple metrics
+- LLM-as-Judge evaluation for answer quality
+- Detailed markdown report generation
 
 ### Secure Authentication
-- JWT (JSON Web Token) based authentication
-- Password hashing using bcrypt
-- Protected API endpoints accessible only to authenticated users
+- JWT-based authentication with bcrypt password hashing
+- Protected API endpoints
 - Configurable token expiration
-
-### Local Data Processing
-- All embedding generation happens locally using sentence-transformers
-- FAISS index stored on local disk
-- MongoDB runs locally (or falls back to file-based storage)
-- No external API calls - all patient data remains on-premises
-
-### User Interface
-- Clean, professional Streamlit-based web interface
-- Login system with session management
-- Expandable result cards for detailed case viewing
-- Real-time search statistics
-- Specialty-based filtering
-
----
-
-## Technology Stack
-
-| Component | Technology | Purpose |
-|-----------|------------|---------|
-| Backend Framework | FastAPI | REST API with automatic documentation |
-| Frontend | Streamlit | Interactive web interface |
-| Authentication | JWT + bcrypt | Secure user authentication |
-| Vector Database | FAISS | Efficient similarity search |
-| Embeddings | sentence-transformers | Generate text embeddings locally |
-| Document Storage | MongoDB | Store transcriptions and metadata |
-| Data Processing | Pandas, NumPy | Data manipulation and processing |
 
 ---
 
@@ -121,24 +196,23 @@ The system is built with a three-tier architecture:
 Medi-Cure-RAG-Kaustubh/
 ├── app/
 │   ├── __init__.py          # Package initialization
-│   ├── main.py              # FastAPI application and endpoints
+│   ├── main.py              # FastAPI application (endpoints)
 │   ├── config.py            # Configuration management
 │   ├── models.py            # Pydantic data models
-│   ├── auth.py              # JWT authentication logic
-│   ├── database.py          # MongoDB connection and operations
-│   └── rag_engine.py        # FAISS-based RAG implementation
+│   ├── auth.py              # JWT authentication (bcrypt)
+│   ├── database.py          # MongoDB operations
+│   ├── rag_engine.py        # FAISS + sentence-transformers RAG
+│   └── llm_engine.py        # Groq LLM integration
 ├── data/
 │   └── mtsamples.csv        # Medical transcriptions dataset
-├── faiss_index/             # FAISS index files (auto-generated)
-│   ├── index.faiss          # Vector index
-│   ├── id_mapping.pkl       # ID to case mapping
-│   └── docs_cache.pkl       # Document cache
-├── streamlit_app.py         # Streamlit UI application
+├── faiss_index/             # FAISS index (auto-generated)
+├── streamlit_app.py         # Streamlit UI (3 tabs)
+├── evaluation.py            # RAG vs Base LLM evaluation script
+├── EVALUATION_REPORT.md     # Generated evaluation report
+├── evaluation_results.json  # Raw evaluation data
 ├── requirements.txt         # Python dependencies
 ├── .env                     # Environment configuration
-├── .env.example             # Example environment file
 ├── .gitignore               # Git ignore rules
-├── users.json               # User storage (fallback if no MongoDB)
 └── README.md                # This file
 ```
 
@@ -150,8 +224,8 @@ Medi-Cure-RAG-Kaustubh/
 
 - Python 3.9 or higher
 - pip (Python package manager)
-- MongoDB (optional - system falls back to file-based storage)
-- Git
+- MongoDB (optional - system falls back to file storage)
+- Groq API key (free at https://console.groq.com)
 
 ### Step 1: Clone the Repository
 
@@ -175,89 +249,49 @@ pip install -r requirements.txt
 
 ### Step 4: Configure Environment Variables
 
-Copy the example environment file and modify as needed:
-
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` with your preferred settings:
+Edit `.env` and set your Groq API key:
 
 ```env
-# Security - Generate a new secret key for production
-JWT_SECRET_KEY=your-secure-secret-key
-JWT_ALGORITHM=HS256
-JWT_ACCESS_TOKEN_EXPIRE_MINUTES=30
-
-# MongoDB Configuration
-MONGODB_URL=mongodb://localhost:27017
-MONGODB_DATABASE=medicure_rag
-
-# Paths
-FAISS_INDEX_PATH=./faiss_index
-DATA_PATH=./data/mtsamples.csv
-
-# Embedding Model
-EMBEDDING_MODEL=all-MiniLM-L6-v2
-
-# Server Configuration
-API_HOST=127.0.0.1
-API_PORT=8000
-STREAMLIT_PORT=8501
+GROQ_API_KEY=your-actual-groq-api-key
+GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
 ### Step 5: Setup MongoDB (Optional)
 
-If you have MongoDB installed:
-
 ```bash
-mongod --dbpath /path/to/data/directory
-```
+# If installed locally:
+mongod --dbpath /path/to/data
 
-Or using Docker:
-
-```bash
+# Or using Docker:
 docker run -d -p 27017:27017 --name mongodb mongo:latest
 ```
 
-Note: If MongoDB is not available, the system will automatically use file-based storage.
+### Step 6: Ensure Dataset Exists
 
-### Step 6: Prepare the Dataset
-
-Ensure the medical transcriptions dataset is placed at `data/mtsamples.csv`. The dataset should contain the following columns:
-- `transcription`: The medical transcription text
-- `medical_specialty`: The medical specialty category
-- `sample_name`: Name/title of the case
-- `keywords`: Associated keywords
-- `description`: Brief description
+Verify `data/mtsamples.csv` is present. This dataset contains ~5,000 medical transcriptions.
 
 ---
 
 ## Running the Application
 
-The application requires two services to run simultaneously:
+Two terminals are required:
 
 ### Terminal 1: Start the API Server
 
 ```bash
-cd Medi-Cure-RAG-Kaustubh
 source venv/bin/activate
 python -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
-On first startup, the system will:
-1. Connect to MongoDB (or initialize file-based storage)
-2. Create demo user accounts
-3. Load the medical transcriptions dataset
-4. Generate embeddings using sentence-transformers (approximately 2-5 minutes)
-5. Build and save the FAISS index
+First run will build the FAISS index (approximately 2-5 minutes). Subsequent runs load from disk.
 
-Subsequent startups will be faster as the index is loaded from disk.
-
-### Terminal 2: Start the Streamlit UI
+### Terminal 2: Start Streamlit UI
 
 ```bash
-cd Medi-Cure-RAG-Kaustubh
 source venv/bin/activate
 streamlit run streamlit_app.py --server.port 8501
 ```
@@ -267,16 +301,31 @@ streamlit run streamlit_app.py --server.port 8501
 | Service | URL |
 |---------|-----|
 | Streamlit UI | http://localhost:8501 |
-| API Documentation | http://localhost:8000/docs |
+| API Documentation (Swagger) | http://localhost:8000/docs |
 | API Health Check | http://localhost:8000/health |
+
+---
+
+## Running the Evaluation
+
+To run the RAG vs Base LLM comparison (Task 2):
+
+```bash
+source venv/bin/activate
+python evaluation.py
+```
+
+This will:
+1. Run 5 medical queries through both RAG and base LLM pipelines
+2. Evaluate using keyword overlap and LLM-as-Judge metrics
+3. Generate `EVALUATION_REPORT.md` with detailed results
+4. Save raw data to `evaluation_results.json`
 
 ---
 
 ## Usage Guide
 
-### Login
-
-Use one of the demo accounts to access the system:
+### Demo Accounts
 
 | Username | Password | Specialty |
 |----------|----------|-----------|
@@ -284,56 +333,33 @@ Use one of the demo accounts to access the system:
 | dr.jones | doctor123 | General Surgery |
 | dr.patel | doctor123 | Internal Medicine |
 
-### Searching for Cases
+### Three UI Tabs
 
-1. Login with valid credentials
-2. Enter a search query describing symptoms, conditions, or procedures
-3. Optionally select a specialty filter
-4. Choose the number of results to return (5, 10, 15, or 20)
-5. Click "Search" to find similar cases
-6. Expand result cards to view full transcriptions
-
-### Example Queries
-
-- "Patient presenting with chest pain and shortness of breath"
-- "Diabetes management with insulin therapy"
-- "Knee replacement surgery post-operative care"
-- "Pediatric fever and respiratory symptoms"
+1. **Retrieval Search**: Find similar cases using semantic search (FAISS only)
+2. **RAG + LLM Answer**: Get AI-generated answers grounded in retrieved cases
+3. **RAG vs Base LLM Comparison**: Side-by-side comparison of both approaches
 
 ---
 
 ## API Documentation
 
-### Authentication Endpoints
+### Authentication
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/auth/register` | Register a new doctor account |
-| POST | `/auth/login` | Login and receive JWT token |
-| GET | `/auth/me` | Get current user information |
+| POST | `/auth/register` | Register a new doctor |
+| POST | `/auth/login` | Login, receive JWT token |
+| GET | `/auth/me` | Get current user info |
 
-### Search Endpoints (Requires Authentication)
+### Search and RAG
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| POST | `/search` | Search for similar medical cases |
-| GET | `/specialties` | Get list of available specialties |
-| GET | `/stats` | Get system statistics |
-
-### Example API Request
-
-```bash
-# Login
-curl -X POST "http://localhost:8000/auth/login" \
-  -H "Content-Type: application/x-www-form-urlencoded" \
-  -d "username=dr.smith&password=doctor123"
-
-# Search (with token)
-curl -X POST "http://localhost:8000/search" \
-  -H "Authorization: Bearer <your-token>" \
-  -H "Content-Type: application/json" \
-  -d '{"query": "chest pain", "top_k": 5}'
-```
+| POST | `/search` | Semantic search (retrieval only) |
+| POST | `/ask` | RAG + LLM (retrieval + generation) |
+| POST | `/ask-base` | Base LLM only (for comparison) |
+| GET | `/specialties` | List medical specialties |
+| GET | `/stats` | System statistics |
 
 ---
 
@@ -341,60 +367,63 @@ curl -X POST "http://localhost:8000/search" \
 
 ### Data Privacy
 
-1. **Local Processing**: All text embeddings are generated using a locally running sentence-transformers model. No data is sent to external APIs.
+1. **Local Embeddings**: All text vectorization uses sentence-transformers running locally. No patient data is sent externally for embedding.
 
-2. **On-Premises Storage**: The FAISS index and MongoDB database are stored locally. Patient data never leaves the system.
+2. **LLM Queries**: When using the LLM features, query text and retrieved transcriptions are sent to the Groq API. For production healthcare use, consider a locally hosted LLM (e.g., Ollama with Llama 3).
 
-3. **No LLM Integration**: The system intentionally does not integrate with cloud-based LLMs to prevent any possibility of data leakage.
+3. **On-Premises Storage**: FAISS index and MongoDB store data locally.
 
-### Authentication Security
+### Authentication
 
-1. **Password Hashing**: All passwords are hashed using bcrypt before storage.
+1. **bcrypt Password Hashing**: Passwords are never stored in plaintext.
+2. **JWT Token Expiration**: Tokens expire after 30 minutes (configurable).
+3. **Protected Endpoints**: All search and LLM endpoints require valid JWT.
 
-2. **JWT Tokens**: Access tokens expire after a configurable period (default: 30 minutes).
+---
 
-3. **Protected Endpoints**: All search functionality requires valid authentication.
+## RAG vs Base LLM Evaluation
 
-### Production Recommendations
+### Evaluation Approach
 
-For production deployment:
+The evaluation uses two established techniques:
 
-1. Generate a strong, unique `JWT_SECRET_KEY`
-2. Use HTTPS/TLS for all communications
-3. Configure proper MongoDB authentication
-4. Implement rate limiting on API endpoints
-5. Set up proper logging and monitoring
-6. Regular security audits and updates
+1. **Automated Metrics**: Keyword overlap to measure topic coverage
+2. **LLM-as-Judge**: Using the LLM itself to evaluate answer quality, a technique from evaluation frameworks like RAGAS, DeepEval, and TruLens
+
+### Metrics Used
+
+| Metric | Description | Applied To |
+|--------|-------------|-----------|
+| Context Relevance | Relevance of retrieved cases to query | RAG only |
+| Groundedness | Is the answer grounded in retrieved context? | RAG only |
+| Completeness | Thoroughness of the answer | Both |
+| Specificity | Presence of specific medical details | Both |
+| Keyword Overlap | Coverage of expected medical topics | Both |
+| Hallucination Risk | Risk of fabricated information | Base LLM |
+| Response Time | End-to-end latency | Both |
+
+### Expected Findings
+
+RAG is expected to outperform the base LLM in:
+- **Specificity**: RAG answers reference real patient cases with actual details
+- **Groundedness**: Answers are traceable to source documents
+- **Hallucination Risk**: Lower risk since answers are grounded in real data
+- **Domain Relevance**: Answers tailored to the hospital's actual patient records
+
+The base LLM may perform comparably in:
+- **General Medical Knowledge**: Broad questions not requiring case-specific data
+- **Response Speed**: No retrieval overhead
+
+The full evaluation report is generated at `EVALUATION_REPORT.md` after running `evaluation.py`.
 
 ---
 
 ## Dataset
 
-This system uses the Medical Transcriptions Dataset from Kaggle:
-- Source: https://www.kaggle.com/datasets/tboyle10/medicaltranscriptions
-- Records: Approximately 5,000 medical transcriptions
-- Specialties: 40+ medical specialty categories
-- Content: Detailed patient notes, procedures, diagnoses, and treatment plans
-
----
-
-## Technical Implementation Details
-
-### RAG Pipeline
-
-1. **Data Ingestion**: Medical transcriptions are loaded from CSV and processed
-2. **Embedding Generation**: Each document is converted to a 384-dimensional vector using the `all-MiniLM-L6-v2` model
-3. **Index Building**: Vectors are indexed using FAISS for efficient similarity search
-4. **Query Processing**: User queries are embedded and compared against the index
-5. **Result Ranking**: Results are ranked by cosine similarity and returned with metadata
-
-### Embedding Model
-
-The system uses `all-MiniLM-L6-v2` from sentence-transformers:
-- Dimension: 384
-- Model Size: ~80MB
-- Speed: Fast inference suitable for real-time search
-- Quality: Good balance between performance and accuracy
+- **Source**: Medical Transcriptions Dataset (Kaggle)
+- **Records**: ~5,000 medical transcriptions
+- **Specialties**: 40+ categories
+- **Content**: Patient notes, procedures, diagnoses, treatment plans
 
 ---
 

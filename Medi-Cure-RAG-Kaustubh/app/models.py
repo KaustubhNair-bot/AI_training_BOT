@@ -2,7 +2,7 @@
 Pydantic models for request/response validation
 """
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 
 # ============== Authentication Models ==============
@@ -58,3 +58,23 @@ class SearchResponse(BaseModel):
     results: List[SearchResult]
     total_results: int
     search_time_ms: float
+
+# ============== LLM Answer Models ==============
+
+class AskQuery(BaseModel):
+    """Model for RAG + LLM queries"""
+    query: str = Field(..., min_length=3, max_length=500, description="Medical question to answer")
+    top_k: int = Field(default=5, ge=1, le=10, description="Number of cases to retrieve for context")
+    specialty_filter: Optional[str] = Field(None, description="Filter by medical specialty")
+
+class LLMResponse(BaseModel):
+    """Response from LLM (with or without RAG context)"""
+    query: str
+    answer: str
+    model: str
+    mode: str  # "rag" or "base_llm"
+    llm_time_ms: float
+    tokens_used: Dict[str, int]
+    num_contexts: int
+    retrieved_cases: Optional[List[SearchResult]] = None
+    retrieval_time_ms: Optional[float] = None
